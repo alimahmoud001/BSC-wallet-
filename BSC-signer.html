@@ -1,0 +1,121 @@
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>BSC - توقيع المعاملات (محفظة باردة)</title>
+    <script src="https://cdn.jsdelivr.net/npm/web3@1.10.0/dist/web3.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #0a0a0a; font-family: monospace; color: #f0f0f0; padding: 20px; }
+        .container { max-width: 550px; margin: 0 auto; background: #111; border-radius: 32px; padding: 24px; }
+        h1 { color: #FBBF24; text-align: center; margin-bottom: 20px; font-size: 1.6rem; }
+        .card { background: #1e1e1e; border-radius: 24px; padding: 18px; margin-bottom: 20px; }
+        input, textarea { width: 100%; background: #2c2c2c; border: 1px solid #444; padding: 12px; border-radius: 20px; color: white; margin-bottom: 12px; }
+        button { background: #FBBF24; color: #000; border: none; padding: 12px; border-radius: 40px; font-weight: bold; width: 100%; margin-top: 5px; cursor: pointer; }
+        .qr-box { background: white; padding: 10px; border-radius: 16px; display: inline-block; margin: 10px auto; text-align: center; width: 100%; max-width: 200px; }
+        .scanner { width: 100%; max-width: 300px; margin: 10px auto; display: none; }
+        .flex { display: flex; gap: 10px; }
+        .badge { background: #2c2c2c; padding: 8px; border-radius: 16px; font-size: 12px; text-align: center; margin-top: 10px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>✍️ توقيع المعاملات (BSC)</h1>
+    <div class="card">
+        <label>🔐 المفتاح الخاص (0x...)</label>
+        <input type="password" id="signerPrivateKey" placeholder="أدخل المفتاح الخاص هنا" />
+        <button id="loadSignerBtn">فتح المحفظة</button>
+        <div id="signerAddress" style="margin-top: 10px; font-size: 12px; word-break: break-all; color: #aaa;"></div>
+    </div>
+
+    <div class="card">
+        <label>📦 المعاملة غير الموقعة (Hex)</label>
+        <textarea id="unsignedTx" rows="3" placeholder="الصق المعاملة غير الموقعة من المحفظة الرئيسية"></textarea>
+        <div class="flex">
+            <button id="scanUnsignedBtn">📷 مسح QR للمعاملة</button>
+            <button id="signTxBtn">🔏 توقيع المعاملة</button>
+        </div>
+        <div id="unsignedScanner" class="scanner"></div>
+    </div>
+
+    <div id="signedArea" style="display: none;" class="card">
+        <label>✅ المعاملة الموقعة (للإرسال)</label>
+        <textarea id="signedRawTx" rows="3" readonly></textarea>
+        <div id="signedQr" class="qr-box"></div>
+        <button id="copySignedBtn">📋 نسخ المعاملة الموقعة</button>
+        <button id="sendSignedBtn">🚀 إرسال المعاملة (BSC)</button>
+        <div class="badge">⚠️ يمكنك لصق المعاملة الموقعة في المحفظة الرئيسية أو إرسالها مباشرة من هنا.</div>
+    </div>
+</div>
+
+<script>
+    const BSC_RPC = "https://bsc-dataseed.binance.org/";
+    const web3 = new Web3(BSC_RPC);
+    let signerAccount = null;
+    let lastSignedTx = null;
+
+    document.getElementById("loadSignerBtn").onclick = () => {
+        let pk = document.getElementById("signerPrivateKey").value.trim();
+        if(!pk) { alert("أدخل المفتاح الخاص"); return; }
+        if(!pk.startsWith("0x")) pk = "0x"+pk;
+        try {
+            signerAccount = web3.eth.accounts.privateKeyToAccount(pk);
+            document.getElementById("signerAddress").innerHTML = `🏦 عنوان التوقيع: ${signerAccount.address}`;
+            alert("تم فتح المحفظة بنجاح");
+        } catch(e) { alert("مفتاح خاص غير صالح"); }
+    };
+
+    let scanner = null;
+    async function startUnsignedScanner() {
+        if(scanner) { await scanner.stop(); scanner = null; }
+        const container = document.getElementById("unsignedScanner");
+        container.style.display = "block";
+        scanner = new Html5Qrcode("unsignedScanner");
+        scanner.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, (decoded) => {
+            document.getElementById("unsignedTx").value = decoded;
+            scanner.stop().then(() => { container.style.display = "none"; scanner = null; alert("تم قراءة المعاملة"); });
+        }).catch(err => { alert("خطأ بالكاميرا"); container.style.display = "none"; });
+    }
+    document.getElementById("scanUnsignedBtn").onclick = startUnsignedScanner;
+
+    document.getElementById("signTxBtn").onclick = async () => {
+        if(!signerAccount) { alert("يرجى تحميل المفتاح الخاص أولاً"); return; }
+        let rawHex = document.getElementById("unsignedTx").value.trim();
+        if(!rawHex) { alert("أدخل المعاملة غير الموقعة"); return; }
+        try {
+            let txObj = JSON.parse(web3.utils.hexToAscii(rawHex));
+            if(!txObj.from || !txObj.to) throw new Error("تنسيق معاملة غير صالح");
+            // التوقيع
+            const signed = await web3.eth.accounts.signTransaction(txObj, signerAccount.privateKey);
+            lastSignedTx = signed.rawTransaction;
+            document.getElementById("signedRawTx").value = lastSignedTx;
+            document.getElementById("signedArea").style.display = "block";
+            // QR code
+            const qrDiv = document.getElementById("signedQr");
+            qrDiv.innerHTML = "";
+            new QRCode(qrDiv, { text: lastSignedTx, width: 180, height: 180 });
+            alert("تم توقيع المعاملة بنجاح");
+        } catch(e) { alert("فشل التوقيع: "+e.message); }
+    };
+
+    document.getElementById("copySignedBtn").onclick = () => {
+        if(lastSignedTx) { navigator.clipboard.writeText(lastSignedTx); alert("تم نسخ المعاملة الموقعة"); }
+        else alert("لا توجد معاملة موقعة");
+    };
+
+    document.getElementById("sendSignedBtn").onclick = async () => {
+        if(!lastSignedTx) { alert("لا توجد معاملة موقعة"); return; }
+        let confirmSend = confirm("هل أنت متأكد من إرسال هذه المعاملة إلى شبكة BSC؟");
+        if(confirmSend) {
+            try {
+                const receipt = await web3.eth.sendSignedTransaction(lastSignedTx);
+                alert(`✅ تم الإرسال بنجاح!\nHash: ${receipt.transactionHash}`);
+                document.getElementById("signedArea").style.display = "none";
+                lastSignedTx = null;
+            } catch(err) { alert("❌ فشل الإرسال: "+err.message); }
+        }
+    };
+</script>
+</body>
+</html>
